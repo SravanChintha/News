@@ -19,11 +19,13 @@ import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import com.google.android.gms.ads.AdListener;
+import com.google.android.gms.ads.AdLoader;
 import com.google.android.gms.ads.AdRequest;
 import com.google.android.gms.ads.AdSize;
 import com.google.android.gms.ads.MobileAds;
 import com.google.android.gms.ads.NativeExpressAdView;
 import com.google.android.gms.ads.RequestConfiguration;
+import com.google.android.gms.ads.formats.UnifiedNativeAd;
 import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.FirebaseApp;
@@ -61,7 +63,14 @@ public class MainActivity extends AppCompatActivity {
 
     private List<Object> mDataSet;
 
-    public final static int spaceBetweenAds = 10;
+    // The number of native ads to load.
+    public static final int NUMBER_OF_ADS = 5;
+
+    // The AdLoader used to load ads.
+    private AdLoader adLoader;
+
+    // List of native ads that have been successfully loaded.
+    private List<UnifiedNativeAd> mNativeAds = new ArrayList<>();
 
     private FirebaseAnalytics mFirebaseAnalytics;
     private boolean adMobEnabled;
@@ -72,11 +81,13 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         progressBar = (ProgressBar) findViewById(R.id.progress_bar);
-        progressBar.setVisibility(View.GONE);
+        //progressBar.setVisibility(View.GONE);
         recyclerView = (RecyclerView) findViewById(R.id.recycler_view);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
 
         mDataSet = new ArrayList<>();
+
+        checkPermission();
 
         MobileAds.initialize(this);
 
@@ -183,7 +194,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void parseJson() {
 
-        //String locale = this.getResources().getConfiguration().locale.getCountry();
         TelephonyManager telephonyManager = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         String country = telephonyManager.getNetworkCountryIso();
         Retrofit retrofit = new Retrofit.Builder()
@@ -218,102 +228,63 @@ public class MainActivity extends AppCompatActivity {
 
     public void loadData(List<Article> articles) {
 
+        System.out.println("LOG:: Dataset size before articles: "+mDataSet.size());
         mDataSet.addAll(articles);
-        if (adMobEnabled)
-            addNativeExpressAds();
-        newsAdapter = new NewsAdapter(MainActivity.this, mDataSet, spaceBetweenAds, newsModelList, adMobEnabled);
+        System.out.println("LOG:: Dataset size after articles: "+mDataSet.size());
+        if (adMobEnabled) {
+            progressBar.setVisibility(View.VISIBLE);
+            loadNativeAds();
+        }
+        System.out.println("LOG:: Dataset size after loading ads: "+mDataSet.size());
+        newsAdapter = new NewsAdapter(MainActivity.this, mDataSet, newsModelList, adMobEnabled);
         recyclerView.setAdapter(newsAdapter);
     }
 
-    /*
-        Method to add Native Express Ads to our Original Dataset
-    */
-    private void addNativeExpressAds() {
-        for (int i = spaceBetweenAds; i <= mDataSet.size(); i += (spaceBetweenAds + 1)) {
-            NativeExpressAdView adView = new NativeExpressAdView(this);
-            //adView.setAdUnitId("ca-app-pub-2264431215397445/7991876442");
-            adView.setAdUnitId("ca-app-pub-3940256099942544/6300978111");
-            mDataSet.add(i, adView);
-        }
-        recyclerView.post(new Runnable() {
-            @Override
-            public void run() {
-                float scale = MainActivity.this.getResources().getDisplayMetrics().density;
-                int adWidth = (int) (recyclerView.getWidth() - (2 * MainActivity.this.getResources().getDimension(R.dimen.activity_horizontal_margin)));
-                AdSize adSize = new AdSize((int) (adWidth / scale), 150);
-                for (int i = spaceBetweenAds; i <= mDataSet.size(); i += (spaceBetweenAds + 1)) {
-                    NativeExpressAdView adViewToSize = (NativeExpressAdView) mDataSet.get(i);
-                    adViewToSize.setAdSize(adSize);
-                }
-                loadNativeExpressAd(spaceBetweenAds);
-            }
-        });
-
-    }
-
-    private void loadNativeExpressAd(final int index) {
-
-        if (index >= mDataSet.size()) {
+    private void insertAdsInMenuItems() {
+        if (mNativeAds.size() <= 0) {
             return;
         }
 
-        Object item = mDataSet.get(index);
-        if (!(item instanceof NativeExpressAdView)) {
-            throw new ClassCastException("Expected item at index " + index + " to be a Native"
-                    + " Express ad.");
+        int offset = (mDataSet.size() / mNativeAds.size()) + 1;
+        int index = 0;
+        for (UnifiedNativeAd ad : mNativeAds) {
+            mDataSet.add(index, ad);
+            index = index + offset;
         }
+    }
 
-        final NativeExpressAdView adView = (NativeExpressAdView) item;
+    private void loadNativeAds() {
 
-        // Set an AdListener on the NativeExpressAdView to wait for the previous Native Express ad
-        // to finish loading before loading the next ad in the items list.
-        adView.setAdListener(new AdListener() {
-            @Override
-            public void onAdLoaded() {
-                super.onAdLoaded();
-                // The previous Native Express ad loaded successfully, call this method again to
-                // load the next ad in the items list.
-                loadNativeExpressAd(index + spaceBetweenAds + 1);
-            }
+        AdLoader.Builder builder = new AdLoader.Builder(this, getString(R.string.ad_unit_id));
+        adLoader = builder.forUnifiedNativeAd(
+                new UnifiedNativeAd.OnUnifiedNativeAdLoadedListener() {
+                    @Override
+                    public void onUnifiedNativeAdLoaded(UnifiedNativeAd unifiedNativeAd) {
+                        // A native ad loaded successfully, check if the ad loader has finished loading
+                        // and if so, insert the ads into the list.
+                        mNativeAds.add(unifiedNativeAd);
+                        System.out.println("LOG:: Native Ads size: "+mNativeAds.size());
+                        if (!adLoader.isLoading()) {
+                            progressBar.setVisibility(View.GONE);
+                            insertAdsInMenuItems();
+                        }
+                    }
+                }).withAdListener(
+                new AdListener() {
+                    @Override
+                    public void onAdFailedToLoad(int errorCode) {
+                        // A native ad failed to load, check if the ad loader has finished loading
+                        // and if so, insert the ads into the list.
+                        Log.e("MainActivity", "The previous native ad failed to load. Attempting to"
+                                + " load another.");
+                        if (!adLoader.isLoading()) {
+                            progressBar.setVisibility(View.GONE);
+                            insertAdsInMenuItems();
+                        }
+                    }
+                }).build();
 
-            @Override
-            public void onAdFailedToLoad(int errorCode) {
-                // The previous Native Express ad failed to load. Call this method again to load
-                // the next ad in the items list.
-                Log.e("AdmobMainActivity", "The previous Native Express ad failed to load. Attempting to"
-                        + " load the next Native Express ad in the items list.");
-                loadNativeExpressAd(index + spaceBetweenAds + 1);
-            }
-        });
-
-        // Load the Native Express ad.
-        //We also registering our device as Test Device with addTestDevic("ID") method
-        adView.loadAd(new AdRequest.Builder().addTestDevice("YOUR_TEST_DEVICE_ID").build());
+        // Load the Native ads.
+        adLoader.loadAds(new AdRequest.Builder().build(), NUMBER_OF_ADS);
     }
 }
-
-//mFirebaseRemoteConfig.fetchAndActivate()
-//        .addOnCompleteListener(this, new OnCompleteListener<Boolean>() {
-//@Override
-//public void onComplete(@NonNull Task<Boolean> task) {
-//        if (task.isSuccessful()) {
-//        boolean updated = task.getResult();
-//
-//        Toast.makeText(MainActivity.this, "Fetch and activate succeeded",
-//        Toast.LENGTH_SHORT).show();
-//
-//        } else {
-//        Toast.makeText(MainActivity.this, "Fetch failed",
-//        Toast.LENGTH_SHORT).show();
-//        }
-//        //displayWelcomeMessage();
-//        }
-//        });
-//
-//        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
-
-//        Bundle bundle = new Bundle();
-//        bundle.putString(FirebaseAnalytics.Param.ITEM_ID, "1");
-//        bundle.putString(FirebaseAnalytics.Param.ITEM_NAME, "sravan");
-//        bundle.putString(FirebaseAnalytics.Param.CONTENT_TYPE, "image");
-//        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SELECT_CONTENT, bundle);
